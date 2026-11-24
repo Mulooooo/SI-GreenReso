@@ -2,18 +2,60 @@
 set -eu
 cd "$(dirname "$0")"; source .env
 
-for net in $(grep -vE '^\s*(#|$)' ../vms.conf | cut -d'|' -f5 | tr ',' '\n' | sort -u); do
-  n=${net#vmnet}
-  grep -q "VNET_${n}_" /etc/vmware/networking && continue
-  sudo tee -a /etc/vmware/networking >/dev/null <<X
+# Réseau WAN VMware : choisir un sous-réseau libre sur l'hôte.
+WAN_SUBNET="192.168.200.0"
+
+sudo -v
+
+# Sauvegarde avant modification.
+sudo cp -a /etc/vmware/networking \
+    "/etc/vmware/networking.bak-$(date +%Y%m%d-%H%M%S)"
+
+ajoute=""
+
+for net in $(
+    grep -vE '^\s*(#|$)' ../vms.conf |
+        cut -d'|' -f5 |
+        tr ',' '\n' |
+        sort -u
+); do
+    n=${net#vmnet}
+
+    # VMnet8 : sortie Internet avec NAT et DHCP VMware.
+    # Ce traitement doit être AVANT le test des entrées existantes.
+    if [[ "$n" == "8" ]]; then
+        sudo sed -i '/^answer VNET_8_/d' /etc/vmware/networking
+
+        sudo tee -a /etc/vmware/networking >/dev/null <<EOF
+answer VNET_8_DHCP yes
+answer VNET_8_HOSTONLY_NETMASK 255.255.255.0
+answer VNET_8_HOSTONLY_SUBNET $WAN_SUBNET
+answer VNET_8_NAT yes
+answer VNET_8_VIRTUAL_ADAPTER yes
+EOF
+        ajoute="oui"
+        continue
+    fi
+
+    # Réseaux internes : conserver les configurations existantes.
+    if grep -q "^answer VNET_${n}_" /etc/vmware/networking; then
+        continue
+    fi
+
+    sudo tee -a /etc/vmware/networking >/dev/null <<EOF
 answer VNET_${n}_DHCP no
 answer VNET_${n}_HOSTONLY_NETMASK 255.255.255.0
 answer VNET_${n}_HOSTONLY_SUBNET 10.10.$(( (n-10)*10 )).0
 answer VNET_${n}_VIRTUAL_ADAPTER no
-X
-  ajoute=oui
+EOF
+    ajoute="oui"
 done
-[ -z "${ajoute:-}" ] || { sudo vmware-networks --stop; sudo vmware-networks --start; }
+
+if [[ -n "$ajoute" ]]; then
+    sudo vmware-networks --stop
+    sudo vmware-networks --start
+    sudo vmware-networks --status
+fi
 
 numero=0
 grep -vE '^\s*(#|$)' ../vms.conf | while IFS='|' read -r nom modele cpu ram reseaux ip; do
@@ -26,6 +68,7 @@ grep -vE '^\s*(#|$)' ../vms.conf | while IFS='|' read -r nom modele cpu ram rese
   for reseau in ${reseaux//,/ }; do
     cat >> $vmx <<X
 ethernet$carte.present = "TRUE"
+ethernet$carte.startConnected = "TRUE"
 ethernet$carte.connectionType = "custom"
 ethernet$carte.vnet = "$reseau"
 ethernet$carte.virtualDev = "e1000e"
