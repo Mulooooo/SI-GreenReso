@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 umask 077
 
+sudo ip link set ens160 up
+sudo ip link set ens192 up
+sudo ip link set ens224 up
+sudo ip link set ens256 up
+
 [[ $EUID -eq 0 ]] || {
     echo "Exécuter ce script avec sudo."
     exit 1
